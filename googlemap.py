@@ -5,7 +5,7 @@ import requests
 import time
 import numpy as np
 # %% 
-api_key = "AIzaSyDPxCYwD0nhvKj6wjCmpV0Lvr7X9v71O7w"
+api_key = "APIKEY"
 # %%
 client = googlemaps.Client(api_key)
 # %%
