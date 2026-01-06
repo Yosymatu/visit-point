@@ -153,7 +153,7 @@ def run_simulation():
     print("-" * 30)
     
     # 3. エージェント生成
-    # ※ここにあなたのOpenAI API Keyを入れてください
+    # Google AI Studioで取得したAPIキー
     API_KEY = "sk-..." 
     
     if API_KEY == "sk-...":
