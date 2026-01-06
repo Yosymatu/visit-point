@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI # 変更点1
 from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
 from langchain.schema import SystemMessage, HumanMessage
 
@@ -63,10 +63,11 @@ class TouristAgent:
         self.history = []
         
         # LLMの初期化
-        self.llm = ChatOpenAI(
-            model_name="gpt-4", 
+        self.llm = ChatGoogleGenerativeAI(
+            model="gemini-1.5-flash", 
             temperature=0.7,
-            openai_api_key=api_key
+            google_api_key=api_key,
+            convert_system_message_to_human=True # GeminiはSystemメッセージの扱いに癖があるためTrue推奨
         )
         
         # プロンプト設計
