@@ -4,85 +4,66 @@ from shapely.geometry import Point
 
 class POISearcher:
     """
-    GeoPandasを用いて現在地周辺のPOIを検索するクラス
+    GeoJSON(Polygon)を用いて現在地周辺のPOIを検索するクラス
     """
-    def __init__(self, poi_csv_file, target_crs="EPSG:6676"):
-        """
-        Args:
-            poi_csv_file (str): POIデータのCSVパス
-            target_crs (str): 距離計算用の投影座標系 (長野はEPSG:6676)
-        """
-        # 1. データ読み込み
-        df = pd.read_csv(poi_csv_file)
+    def __init__(self, poi_geojson_file, target_crs="EPSG:6676"):
+        # 1. GeoJSON読み込み
+        self.gdf = gpd.read_file(poi_geojson_file)
         
-        # 緯度経度列の名前解決（適宜調整してください）
-        lat_col = 'latitude' if 'latitude' in df.columns else 'lat'
-        lon_col = 'longitude' if 'longitude' in df.columns else 'lon'
-        
-        # 2. GeoDataFrame化 (WGS84)
-        self.gdf = gpd.GeoDataFrame(
-            df,
-            geometry=gpd.points_from_xy(df[lon_col], df[lat_col]),
-            crs="EPSG:4326"
-        )
-        
-        # 3. 距離計算用に投影変換しておく (高速化のためinitでやっておく)
+        # 2. 距離計算用に投影変換
         self.gdf_projected = self.gdf.to_crs(target_crs)
         self.target_crs = target_crs
+        
+        # 3. エージェントの移動先座標として使うため、あらかじめ「重心」を計算しておく
+        # (Polygonのままだと lat, lon が一意に決まらないため)
+        self.gdf_projected['centroid_geom'] = self.gdf_projected.geometry.centroid
+        
+        # 重心をWGS84に戻して lat/lon 列を作っておく（LLMへの提示やログ用）
+        centroids_wgs84 = self.gdf_projected['centroid_geom'].to_crs("EPSG:4326")
+        self.gdf_projected['center_lat'] = centroids_wgs84.y
+        self.gdf_projected['center_lon'] = centroids_wgs84.x
 
     def search_nearby(self, current_lat, current_lon, radius_m=2000, limit=10):
         """
-        指定座標から半径m以内のPOIを検索してリストで返す
+        指定座標から半径m以内の建物POIを検索
         """
-        # 現在地をPointオブジェクト化
         current_point = gpd.GeoSeries(
             [Point(current_lon, current_lat)], 
             crs="EPSG:4326"
-        )
+        ).to_crs(self.target_crs).iloc[0]
         
-        # 距離計算用座標系へ変換
-        current_point_proj = current_point.to_crs(self.target_crs).iloc[0]
+        # Polygonとの距離計算 (Polygon内なら0になる)
+        distances = self.gdf_projected.geometry.distance(current_point)
         
-        # --- 距離計算 & フィルタリング ---
-        # 全POIとの距離を計算
-        distances = self.gdf_projected.distance(current_point_proj)
-        
-        # 半径以内のインデックスを取得
         mask = distances <= radius_m
         nearby_pois = self.gdf_projected[mask].copy()
-        
-        # 距離列を追加
         nearby_pois['dist'] = distances[mask]
         
-        # 近い順にソートして、上位limit件に絞る
         nearby_pois = nearby_pois.sort_values('dist').head(limit)
         
-        # LLMに渡すための辞書リスト形式に変換
-        # 必要なカラム: name, category, dist
         candidates = []
         for _, row in nearby_pois.iterrows():
-            # 自分自身（距離0m）は除外する場合
-            if row['dist'] < 1.0: 
-                continue
-                
-            candidates.append({
-                "name": row['name'],          # CSVの施設名カラム
-                "category": row['category'],  # CSVのカテゴリカラム
-                "dist": int(row['dist'])      # 整数メートル
-            })
+            # GeoJSONのプロパティ名に合わせてください
+            name = row.get('name', 'Unknown Building') 
+            category = row.get('category', 'Unknown')
             
+            candidates.append({
+                "name": name,
+                "category": category,
+                "dist": int(row['dist'])
+            })
         return candidates
 
     def get_coords_by_name(self, spot_name):
         """
-        施設名から座標(lat, lon)を取得するヘルパー関数
-        （エージェントが次の場所に移動した際、その座標を知るために使用）
+        施設名から「重心座標」を取得する
         """
-        # 完全一致検索 (必要に応じて部分一致などに変更)
-        target = self.gdf[self.gdf['name'] == spot_name]
+        target = self.gdf_projected[self.gdf_projected['name'] == spot_name]
         if len(target) > 0:
-            point = target.iloc[0].geometry
-            return point.y, point.x  # lat, lon
+            # 事前に計算しておいた重心を使用
+            lat = target.iloc[0]['center_lat']
+            lon = target.iloc[0]['center_lon']
+            return lat, lon
         return None
 
 # ==========================================

@@ -1,9 +1,10 @@
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from langchain_google_genai import ChatGoogleGenerativeAI # 変更点1
+
+from langchain_community.chat_models import ChatOllama 
 from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
-from langchain.schema import SystemMessage, HumanMessage
+from datetime import datetime, timedelta
 
 class ClusterVerbalizer:
     """
@@ -53,21 +54,23 @@ class ClusterVerbalizer:
 
 class TouristAgent:
     """
-    LLMを搭載した観光エージェント
+    Ollama (ローカルLLM) を搭載した観光エージェント
     """
-    def __init__(self, agent_id, persona_text, api_key):
+    def __init__(self, agent_id, persona_text): # APIキー引数は不要になりました
         self.agent_id = agent_id
         self.persona = persona_text
-        self.current_location = "伊那市駅" # 初期位置
-        self.current_time = datetime(2023, 11, 1, 10, 0) # 初期時刻
+        self.current_location = "伊那市駅"
+        self.current_time = datetime(2023, 11, 1, 10, 0)
         self.history = []
         
-        # LLMの初期化
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash", 
-            temperature=0.7,
-            google_api_key=api_key,
-            convert_system_message_to_human=True # GeminiはSystemメッセージの扱いに癖があるためTrue推奨
+        # ===========================================================
+        # ここが変更点: Ollamaモデルの初期化
+        # ===========================================================
+        self.llm = ChatOllama(
+            model="llama3",      # 事前に `ollama pull llama3` しておくこと
+            temperature=0.7,     # 創造性の制御
+            # base_url="http://localhost:11434", # デフォルトなら省略可
+            # num_ctx=4096       # 文脈長を増やしたい場合は指定（デフォルト2048）
         )
         
         # プロンプト設計
@@ -153,23 +156,42 @@ def run_simulation():
     print("-" * 30)
     
     # 3. エージェント生成
-    # Google AI Studioで取得したAPIキー
-    API_KEY = "sk-..." 
+    agent = TouristAgent(
+            agent_id="SimUser_01", 
+            persona_text=persona_text
+        )
     
-    if API_KEY == "sk-...":
-        print("API Keyが設定されていません。コード内のAPI_KEYを書き換えてください。")
-        return
+    # 2. エージェントの現在地の座標を設定
+    # 初期位置（例: 伊那市駅）の座標を取得
+    poi_searcher = POISearcher(poi_csv_file='ina_poi_data.csv')
+        
+    current_spot_name = "伊那市駅"
+    current_coords = poi_searcher.get_coords_by_name(current_spot_name)
+    
+    if current_coords is None:
+        # 見つからない場合はデフォルト値　伊那市駅
+        current_lat, current_lon = 35.83865171954657, 137.95924309319525
+    else:
+        current_lat, current_lon = current_coords
 
-    agent = TouristAgent(agent_id="SimUser_01", persona_text=persona_text, api_key=API_KEY)
+    print(f"現在地: {current_spot_name} ({current_lat:.4f}, {current_lon:.4f})")
     
     # 4. シミュレーションステップ
-    # 現在地周辺のPOI候補（本来はGeoPandasで検索して渡す）
-    candidates = [
-        {"name": "高遠そば ますや", "category": "飲食店", "dist": 300},
-        {"name": "高遠城址公園", "category": "観光施設", "dist": 500},
-        {"name": "コンビニ", "category": "小売店", "dist": 100},
-        {"name": "山頂展望台", "category": "自然", "dist": 5000}
-    ]
+    candidates = poi_searcher.search_nearby(
+        current_lat=current_lat, 
+        current_lon=current_lon, 
+        radius_m=3000, # 半径3km以内
+        limit=10       # 上位10件
+    )
+    
+    # 検索結果が空の場合の対策（範囲を広げるか、タクシー等を出すか）
+    if not candidates:
+        print("近くに施設が見つかりませんでした。検索範囲を広げます。")
+        candidates = poi_searcher.search_nearby(current_lat, current_lon, radius_m=10000, limit=5)
+
+    print("\n【検索された周辺候補】")
+    for c in candidates:
+        print(f"- {c['name']} ({c['category']}): {c['dist']}m")
     
     print("\n【意思決定プロセス】")
     result = agent.decide_next_spot(candidates)
