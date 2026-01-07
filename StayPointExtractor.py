@@ -1,3 +1,4 @@
+
 import pandas as pd
 import numpy as np
 import glob
@@ -7,8 +8,9 @@ from datetime import timedelta
 
 class StayPointExtractor:
     """
-    GPS軌跡データから滞在地点(Stay Point)を抽出するクラス。
+    GPS軌跡データ(月単位CSV)から滞在地点(Stay Point)を抽出するクラス。
     ドリフト（一時的な座標飛び）への許容ロジックを含む。
+    ファイル単位で処理が完結するため、メモリ効率が良い。
     """
 
     def __init__(self, input_dir, output_file, 
@@ -20,7 +22,7 @@ class StayPointExtractor:
             output_file (str): 出力するCSVのファイルパス
             dist_radius_m (int): 滞在とみなす判定円の半径(m)
             time_min (int): 滞在とみなす最小時間(分)
-            drift_tolerance (int): 判定円を出ても許容する回数（ドリフト対策）。1=2分間の飛び出しを許容。
+            drift_tolerance (int): ドリフト許容回数 (1=2分間の飛び出しを許容)
             cols (dict): CSVのカラム名マッピング
         """
         self.input_dir = input_dir
@@ -40,10 +42,8 @@ class StayPointExtractor:
 
     @staticmethod
     def _calculate_distance_fast(lat1, lon1, lat2, lon2):
-        """
-        2点間の距離(m)を計算する静的メソッド (Haversine formula)
-        """
-        R = 6371000  # 地球半径(m)
+        """Haversine formulaによる高速距離計算(m)"""
+        R = 6371000
         phi1, phi2 = math.radians(lat1), math.radians(lat2)
         dphi = math.radians(lat2 - lat1)
         dlambda = math.radians(lon2 - lon1)
@@ -54,9 +54,9 @@ class StayPointExtractor:
 
     def _extract_from_trajectory(self, user_df):
         """
-        1ユーザー分のデータフレームから滞在リストを抽出するコアロジック
+        1ユーザー分の軌跡データから滞在リストを抽出する
         """
-        # Numpy配列化して高速アクセス
+        # データ抽出と配列化（高速化のため）
         lats = user_df[self.cols['latitude']].values
         lons = user_df[self.cols['longitude']].values
         times = user_df[self.cols['timestamp']].values
@@ -85,24 +85,22 @@ class StayPointExtractor:
                 else:
                     # 範囲外（ドリフト判定）
                     if outlier_count < self.drift_tolerance:
+                        # 許容範囲内（ノイズとして無視）
                         outlier_count += 1
                         j += 1
                     else:
-                        # 許容回数を超えたため移動とみなす
-                        # outlier分巻き戻してループを抜ける
-                        j -= outlier_count 
+                        # 許容回数を超えたため移動確定
+                        j -= outlier_count # ノイズとみなした分を戻す
                         break
             
             # --- 滞在判定 ---
             end_idx = j - 1
             if end_idx > i:
                 end_time = times[end_idx]
-                # timedelta64[ns] -> 分に変換
                 duration_min = (end_time - start_time).astype('timedelta64[m]').astype(int)
                 
                 if duration_min >= self.time_min:
                     # 滞在確定: 重心を計算
-                    # (ドリフト点も含めて平均化する場合)
                     center_lat = np.mean(lats[i:j])
                     center_lon = np.mean(lons[i:j])
                     
@@ -114,87 +112,14 @@ class StayPointExtractor:
                         'latitude': center_lat,
                         'longitude': center_lon
                     })
+                    # 次の探索は滞在終了点の次から
                     i = j
                 else:
+                    # 時間が短い -> 滞在ではない
                     i += 1
             else:
                 i += 1
                 
         return stays
 
-    def process_files(self):
-        """
-        フォルダ内の全ファイルを順次処理してCSVに出力するメインメソッド
-        """
-        # 出力ファイルの初期化
-        self._initialize_output_file()
-        
-        files = glob.glob(os.path.join(self.input_dir, "*.csv"))
-        print(f"Target Files: {len(files)}")
-        
-        total_stays_count = 0
-        
-        for filepath in files:
-            print(f"Processing: {os.path.basename(filepath)} ...")
-            try:
-                self._process_single_file(filepath)
-            except Exception as e:
-                print(f"Error processing {filepath}: {e}")
-                
-        print(f"Processing complete.")
-
-    def _initialize_output_file(self):
-        """出力ファイルのヘッダー作成"""
-        header_df = pd.DataFrame(columns=[
-            'uuid', 'stay_start_time', 'stay_end_time', 
-            'duration_min', 'latitude', 'longitude'
-        ])
-        header_df.to_csv(self.output_file, index=False)
-
-    def _process_single_file(self, filepath):
-        """単一ファイルの読み込み・処理・追記保存"""
-        # 必要な列のみ読み込み
-        usecols = list(self.cols.values())
-        df = pd.read_csv(filepath, usecols=usecols)
-        df[self.cols['timestamp']] = pd.to_datetime(df[self.cols['timestamp']])
-        
-        monthly_stays = []
-        
-        # ユーザーごとに処理
-        for _, user_data in df.groupby(self.cols['uuid']):
-            user_data = user_data.sort_values(self.cols['timestamp'])
-            if len(user_data) < 2:
-                continue
-                
-            stays = self._extract_from_trajectory(user_data)
-            if stays:
-                monthly_stays.extend(stays)
-        
-        # 結果があれば追記
-        if monthly_stays:
-            result_df = pd.DataFrame(monthly_stays)
-            result_df.to_csv(self.output_file, mode='a', header=False, index=False)
-
-
-# ==========================================
-# 実行例
-# ==========================================
-if __name__ == "__main__":
-    
-    # 1. インスタンス生成
-    extractor = StayPointExtractor(
-        input_dir='./gps_data/',              # 入力フォルダ
-        output_file='./output_stays.csv',     # 出力ファイル
-        dist_radius_m=20,                     # 半径20m
-        time_min=15,                          # 15分以上
-        drift_tolerance=1,                    # ドリフト許容(1点)
-        cols={                                # カラム名マッピング（任意）
-            'uuid': 'uuid',
-            'timestamp': 'timestamp',
-            'latitude': 'latitude',
-            'longitude': 'longitude'
-        }
-    )
-    
-    # 2. 実行
-    extractor.process_files()
+    def process_files(
