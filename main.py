@@ -1,66 +1,75 @@
 import os
+from stay_extractor import StayPointExtractor
+from poi_matcher import POIMatcher
+from analyzer import TripClusterAnalyzer
+from poi_searcher import POISearcher
+from agent import ClusterVerbalizerEn, TouristAgentEn
 
-# ========================================================
-# ここにこれまでに作成した2つのクラス定義を貼り付けるか、
-# 別ファイル(ex: modules.py)からimportしてください。
-# from modules import StayPointExtractor, POIMatcher
-# ========================================================
+def main():
+    # パス設定
+    GPS_DIR = './gps_data_monthly/'
+    INTERMEDIATE = './intermediate_stays.csv'
+    POI_FILE = './ina_buildings.geojson'
+    FINAL_CHAIN = './ina_trip_chains.csv'
+    
+    # 1. 滞在抽出 (Phase 1)
+    if not os.path.exists(INTERMEDIATE):
+        print("Starting Stay Extraction...")
+        extractor = StayPointExtractor(
+            GPS_DIR, INTERMEDIATE, 
+            cols={
+                'uuid':'uuid', 'latitude':'latitude', 'longitude':'longitude',
+                'year':'year', 'month':'month', 'day':'day', 'hour':'hour', 'minute':'minute'
+            }
+        )
+        extractor.process_files()
 
-def generate_trip_chains_pipeline():
-    print("=== Phase 1: GPSログからの滞在点抽出 (Stay Point Extraction) ===")
+    # 2. POI結合 (Phase 2)
+    if not os.path.exists(FINAL_CHAIN):
+        print("Starting POI Matching...")
+        matcher = POIMatcher(INTERMEDIATE, POI_FILE, FINAL_CHAIN)
+        matcher.process()
+
+    # 3. クラスタリング分析 (Phase 3)
+    analyzer = TripClusterAnalyzer(FINAL_CHAIN, n_clusters=3)
+    centroids, features = analyzer.analyze()
     
-    # 一時ファイルのパス
-    intermediate_stay_file = './intermediate_stays.csv'
+    if centroids is None:
+        print("Clustering failed due to insufficient data.")
+        return
+
+    # 4. エージェントシミュレーション (Phase 4)
+    print("\n[Phase 4] Running Simulation...")
     
-    # 1. 滞在抽出器の初期化
-    extractor = StayPointExtractor(
-        input_dir='./gps_data_monthly/',       # 月次GPSデータのフォルダ
-        output_file=intermediate_stay_file,    # 中間出力ファイル
-        dist_radius_m=20,                      # 20m以内の範囲
-        time_min=15,                           # 15分以上の滞在
-        drift_tolerance=1,                     # ドリフト許容(1回)
+    # 検索クラスの準備
+    searcher = POISearcher(POI_FILE)
+    
+    # クラスタ0のペルソナ生成
+    verbalizer = ClusterVerbalizerEn(features)
+    persona = verbalizer.verbalize(0, centroids[0])
+    print(f"--- Persona ---\n{persona}\n---------------")
+    
+    # エージェント初期化
+    agent = TouristAgentEn(persona, model_name="llama3")
+    
+    # 開始地点の設定（例：伊那市駅）
+    start_spot = "伊那市駅"
+    current_lat, current_lon = searcher.get_coords_by_name(start_spot) or (35.8398, 137.9622)
+    agent.current_location_name = start_spot
+    print(f"Start: {start_spot} ({current_lat:.4f}, {current_lon:.4f})")
+
+    # 意思決定ループ（1回分）
+    candidates = searcher.search_nearby(current_lat, current_lon, radius_m=2000, limit=5)
+    
+    if candidates:
+        full_response, decision_name = agent.decide(candidates)
+        print(f"\n{full_response}\n")
         
-        # 【重要】お手元のCSVカラム名に合わせてマッピング
-        cols={
-            'uuid': 'uuid',
-            'latitude': 'latitude',
-            'longitude': 'longitude',
-            'year': 'year',      # 日時が分かれている場合
-            'month': 'month',
-            'day': 'day',
-            'hour': 'hour',
-            'minute': 'minute'
-        }
-    )
-    
-    # 実行
-    extractor.process_files()
-    
-    print("\n=== Phase 2: 建物ポリゴンとの空間結合 (POI Matching) ===")
-    
-    # 最終出力ファイルのパス
-    final_output_file = './ina_trip_chains.csv'
-    
-    # 2. POIマッチャーの初期化
-    matcher = POIMatcher(
-        stay_file=intermediate_stay_file,         # Phase 1の出力
-        poi_geojson_file='./ina_buildings.geojson', # 建物ポリゴンデータ
-        output_file=final_output_file,            # 最終的なトリップチェーン
-        dist_threshold_m=30,                      # 建物から30m以内なら滞在とみなす
-        target_crs="EPSG:6676"                    # 長野県の座標系
-    )
-    
-    # 実行
-    matcher.process()
-
-    print(f"\n=== 全工程完了 ===")
-    print(f"生成されたトリップチェーン: {final_output_file}")
+        next_coords = searcher.get_coords_by_name(decision_name)
+        if next_coords:
+            print(f"Agent moved to: {decision_name}")
+    else:
+        print("No candidates found.")
 
 if __name__ == "__main__":
-    # 事前チェック: 入力データがあるか確認
-    if not os.path.exists('./gps_data_monthly/'):
-        print("エラー: './gps_data_monthly/' フォルダが見つかりません。")
-    elif not os.path.exists('./ina_buildings.geojson'):
-        print("エラー: './ina_buildings.geojson' が見つかりません。")
-    else:
-        generate_trip_chains_pipeline()
+    main()
