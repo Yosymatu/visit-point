@@ -121,5 +121,84 @@ class StayPointExtractor:
                 i += 1
                 
         return stays
+        
+    def process_files(self):
+        """
+        フォルダ内の全ファイルを順次処理するメインメソッド
+        """
+        self._initialize_output_file()
+        
+        files = sorted(glob.glob(os.path.join(self.input_dir, "*.csv")))
+        print(f"Target Files: {len(files)}")
+        
+        total_stays_count = 0
+        
+        for filepath in files:
+            print(f"Processing: {os.path.basename(filepath)} ...")
+            try:
+                self._process_single_file(filepath)
+            except Exception as e:
+                print(f"Error processing {filepath}: {e}")
+                
+        print(f"Processing complete.")
 
-    def process_files(
+    def _initialize_output_file(self):
+        """出力ファイルのヘッダー作成"""
+        header_df = pd.DataFrame(columns=[
+            'uuid', 'stay_start_time', 'stay_end_time', 
+            'duration_min', 'latitude', 'longitude'
+        ])
+        header_df.to_csv(self.output_file, index=False)
+
+    def _process_single_file(self, filepath):
+        """単一ファイルの読み込み・処理・追記保存"""
+        # 必要な列のみ読み込み
+        usecols = list(self.cols.values())
+        
+        # 月次ファイルは大きい可能性があるため、型指定などをするとよりメモリ安全ですが
+        # ここでは標準的な読み込みを行います
+        df = pd.read_csv(filepath, usecols=usecols)
+        df[self.cols['timestamp']] = pd.to_datetime(df[self.cols['timestamp']])
+        
+        monthly_stays = []
+        
+        # ユーザーごとに処理
+        # UUIDは月ごとにユニークなので、ファイル内で完結して良い
+        for _, user_data in df.groupby(self.cols['uuid']):
+            user_data = user_data.sort_values(self.cols['timestamp'])
+            if len(user_data) < 2:
+                continue
+                
+            stays = self._extract_from_trajectory(user_data)
+            if stays:
+                monthly_stays.extend(stays)
+        
+        # 結果があれば追記
+        if monthly_stays:
+            result_df = pd.DataFrame(monthly_stays)
+            result_df.to_csv(self.output_file, mode='a', header=False, index=False)
+            print(f"  -> Extracted {len(result_df)} stays.")
+
+        # メモリ解放
+        del df
+        del monthly_stays
+
+# ==========================================
+# 実行例
+# ==========================================
+if __name__ == "__main__":
+    extractor = StayPointExtractor(
+        input_dir='./gps_data_monthly/',      # 月次CSVが入っているフォルダ
+        output_file='./output_stays.csv',     # 出力先
+        dist_radius_m=20,                     # 半径20m
+        time_min=15,                          # 15分以上
+        drift_tolerance=1,                    # ドリフト許容(1点)
+        cols={                                # カラム名
+            'uuid': 'uuid',
+            'timestamp': 'timestamp',
+            'latitude': 'latitude',
+            'longitude': 'longitude'
+        }
+    )
+    
+    extractor.process_files()
