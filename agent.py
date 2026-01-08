@@ -7,22 +7,75 @@ class ClusterVerbalizerEn:
     def __init__(self, feature_names):
         self.feature_names = feature_names
 
-    def verbalize(self, cluster_id, centroid_matrix):
+    def _analyze_single_cluster(self, centroid_matrix):
+        """
+        単一の重心行列から特徴（時間、滞在時間、カテゴリ）を抽出するヘルパーメソッド
+        """
+        # 1. 時間帯の傾向 (Start Hour)
         idx_time = [i for i, f in enumerate(self.feature_names) if 'start_hour' in f][0]
-        avg_time = np.mean(centroid_matrix[:, idx_time]) * 24.0
-        time_desc = "You prefer morning activities." if avg_time < 12 else "You prefer afternoon/evening activities."
+        # 正規化されているため 0.0(データ内の最早)〜1.0(最遅)
+        avg_time_score = np.mean(centroid_matrix[:, idx_time])
         
+        if avg_time_score < 0.3:
+            time_type = "Early Morning"
+        elif avg_time_score < 0.6:
+            time_type = "Daytime"
+        else:
+            time_type = "Late Afternoon / Night"
+
+        # 2. 滞在時間の傾向 (Duration)
+        idx_dur = [i for i, f in enumerate(self.feature_names) if 'duration' in f][0]
+        avg_dur_score = np.mean(centroid_matrix[:, idx_dur])
+        
+        if avg_dur_score < 0.3:
+            dur_type = "Short stays (Quick visits)"
+        elif avg_dur_score < 0.6:
+            dur_type = "Medium length stays"
+        else:
+            dur_type = "Long stays (Deep exploration)"
+
+        # 3. メインカテゴリの特定
         cat_indices = [i for i, f in enumerate(self.feature_names) if 'cat_' in f]
         if cat_indices:
             mean_cats = np.mean(centroid_matrix[:, cat_indices], axis=0)
-            top_cat = self.feature_names[cat_indices[np.argmax(mean_cats)]].replace('cat_', '')
+            top_cat_idx = np.argmax(mean_cats)
+            # 'cat_' を除去してカテゴリ名を取得
+            top_cat = self.feature_names[cat_indices[top_cat_idx]].replace('cat_', '')
         else:
-            top_cat = "exploring"
-        
-        return (f"You are a tourist visiting Ina City. ID: {cluster_id}.\n"
-                f"Personality: {time_desc} You strongly prefer '{top_cat}'.\n"
-                f"Guideline: Decide based on your personality.")
+            top_cat = "General"
 
+        return time_type, dur_type, top_cat
+
+    def explain_all_clusters(self, centroids):
+        """
+        全クラスターの特徴を要約して辞書で返す
+        """
+        summaries = {}
+        print("\n=== Cluster Characteristics Analysis ===")
+        for i, center in enumerate(centroids):
+            time_type, dur_type, top_cat = self._analyze_single_cluster(center)
+            
+            desc = (f"[Cluster {i}] is {time_type} type. "
+                    f"Prefers '{top_cat}'. "
+                    f"Tendency: {dur_type}.")
+            
+            summaries[i] = desc
+            print(desc)
+        print("========================================\n")
+        return summaries
+
+    def verbalize(self, cluster_id, centroid_matrix):
+        """
+        特定クラスターのペルソナ（System Prompt用）を生成
+        """
+        time_type, dur_type, top_cat = self._analyze_single_cluster(centroid_matrix)
+        
+        return (f"You are a tourist visiting Ina City. Your ID is {cluster_id}.\n"
+                f"Personality: You act mainly during {time_type}. "
+                f"You strongly prefer '{top_cat}' and usually make {dur_type}.\n"
+                f"Guideline: Make decisions that reflect this personality.")
+
+# --- TouristAgentEn クラスは変更なし ---
 class TouristAgentEn:
     def __init__(self, persona_text, model_name="llama3"):
         self.persona = persona_text
