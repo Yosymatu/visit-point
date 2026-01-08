@@ -76,37 +76,73 @@ class ClusterVerbalizerEn:
                 f"Guideline: Make decisions that reflect this personality.")
 
 # --- TouristAgentEn クラスは変更なし ---
+import random
+
 class TouristAgentEn:
     def __init__(self, persona_text, model_name="llama3"):
         self.persona = persona_text
         self.current_location_name = "Start Point"
         self.current_time = datetime(2023, 11, 1, 10, 0)
         self.history = []
-        self.llm = ChatOllama(model=model_name, temperature=0.7)
+        self.llm = ChatOllama(model=model_name, temperature=0.7) # ここは0.7でOK
+        
+        # プロンプトを変更: 1つ選ぶのではなく、スコア(0-10)を付けさせる
         self.prompt_template = ChatPromptTemplate.from_messages([
             SystemMessagePromptTemplate.from_template("{persona}"),
             HumanMessagePromptTemplate.from_template(
                 "Situation:\n- Location: {loc}\n- Time: {time}\n- History: {hist}\n\n"
                 "Candidates:\n{cand}\n\n"
-                "Task: Pick one destination from the Candidates.\n"
-                "Format:\nDecision: [Name from list]\nReasoning: [English sentence]"
+                "Task: Evaluate how much you want to visit each candidate (0-10).\n"
+                "Format:\n"
+                "[Name 1]: [Score]\n"
+                "[Name 2]: [Score]\n"
+                "...\n"
+                "Reasoning: [One sentence summary]"
             )
         ])
 
     def decide(self, candidates):
         hist_str = " -> ".join(self.history) if self.history else "None"
         cand_str = "\n".join([f"- {c['name']} ({c['category']}, {c['dist']}m)" for c in candidates])
+        
         msg = self.prompt_template.format_messages(
             persona=self.persona, loc=self.current_location_name,
             time=self.current_time.strftime("%H:%M"), hist=hist_str, cand=cand_str
         )
         response = self.llm.invoke(msg).content
         
-        decision = "Unknown"
+        # --- スコア抽出と確率的選択ロジック ---
+        scores = {}
         for line in response.split('\n'):
-            if line.startswith("Decision:"):
-                decision = line.replace("Decision:", "").strip()
-                self.current_location_name = decision
-                self.history.append(decision)
-                break
+            # "高遠城址公園: 8" のような行を探す
+            if ':' in line and not line.startswith("Reasoning"):
+                parts = line.split(':')
+                name = parts[0].strip().replace("- ", "")
+                try:
+                    score = float(parts[1].strip())
+                    scores[name] = score
+                except ValueError:
+                    continue
+        
+        # 候補リストにあるものだけスコアを採用（パース失敗対策）
+        valid_candidates = []
+        weights = []
+        
+        for c in candidates:
+            # LLMがスコアを付けなかった場合はデフォルト1点
+            s = scores.get(c['name'], 1.0)
+            valid_candidates.append(c['name'])
+            # スコアを重みとして使う (2乗することで差を広げるテクニックも有効)
+            weights.append(s ** 2) 
+
+        if not valid_candidates:
+            return response, "Error: No valid decision"
+
+        # Pythonの機能で重み付け抽選を行う
+        # k=1 で1つ選ぶ
+        decision = random.choices(valid_candidates, weights=weights, k=1)[0]
+        
+        self.current_location_name = decision
+        self.history.append(decision)
+        
         return response, decision
