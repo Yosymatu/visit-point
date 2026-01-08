@@ -12,7 +12,7 @@ def main():
     POI_FILE = './ina_buildings.geojson'
     FINAL_CHAIN = './ina_trip_chains.csv'
     
-    # 1. 滞在抽出 (Phase 1)
+    # 1. Stay Extraction
     if not os.path.exists(INTERMEDIATE):
         print("Starting Stay Extraction...")
         extractor = StayPointExtractor(
@@ -24,13 +24,13 @@ def main():
         )
         extractor.process_files()
 
-    # 2. POI結合 (Phase 2)
+    # 2. POI Matching
     if not os.path.exists(FINAL_CHAIN):
         print("Starting POI Matching...")
         matcher = POIMatcher(INTERMEDIATE, POI_FILE, FINAL_CHAIN)
         matcher.process()
 
-    # 3. クラスタリング分析 (Phase 3)
+    # 3. Clustering
     analyzer = TripClusterAnalyzer(FINAL_CHAIN, n_clusters=3)
     centroids, features = analyzer.analyze()
     
@@ -38,27 +38,35 @@ def main():
         print("Clustering failed due to insufficient data.")
         return
 
-    # 4. エージェントシミュレーション (Phase 4)
-    print("\n[Phase 4] Running Simulation...")
+    # ==========================================================
+    # ここが変更点: クラスター特徴の説明を表示
+    # ==========================================================
+    print("\n[Phase 4] Analyzing Cluster Characteristics...")
     
-    # 検索クラスの準備
-    searcher = POISearcher(POI_FILE)
-    
-    # クラスタ0のペルソナ生成
     verbalizer = ClusterVerbalizerEn(features)
-    persona = verbalizer.verbalize(0, centroids[0])
-    print(f"--- Persona ---\n{persona}\n---------------")
+    # 全クラスターの特徴を表示
+    summaries = verbalizer.explain_all_clusters(centroids)
     
-    # エージェント初期化
+    # シミュレーションしたいクラスターIDを指定（ここでは例として0番）
+    # ※ 実際にはユーザー入力(input())で選ばせても良いです
+    target_cluster_id = 0
+    print(f"\nRunning Simulation for -> Cluster {target_cluster_id}")
+    
+    # ペルソナ生成
+    persona = verbalizer.verbalize(target_cluster_id, centroids[target_cluster_id])
+    print(f"--- Generated Persona ---\n{persona}\n-------------------------")
+    
+    # ==========================================================
+    
+    # 4. Simulation
+    searcher = POISearcher(POI_FILE)
     agent = TouristAgentEn(persona, model_name="llama3")
     
-    # 開始地点の設定（例：伊那市駅）
     start_spot = "伊那市駅"
     current_lat, current_lon = searcher.get_coords_by_name(start_spot) or (35.8398, 137.9622)
     agent.current_location_name = start_spot
     print(f"Start: {start_spot} ({current_lat:.4f}, {current_lon:.4f})")
 
-    # 意思決定ループ（1回分）
     candidates = searcher.search_nearby(current_lat, current_lon, radius_m=2000, limit=5)
     
     if candidates:
